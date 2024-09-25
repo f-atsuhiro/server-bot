@@ -14,7 +14,7 @@ For the Readme, writing an English version is currently under consideration.(Rea
 
 ## 目的
 
-このbotはサーバーを管理するためのdiscord botです。
+このbotはサーバーを管理するためのdiscord bot/webツールです。
 
 discordを用いて特定のサーバーを管理できます。
 
@@ -22,11 +22,11 @@ discordを用いて特定のサーバーを管理できます。
 
 ## コマンド一覧
 
-プログラムに含まれるコマンドは以下の通りです。
+プログラムに含まれるbotコマンドは以下の通りです。
 
 |コマンド|実行結果|必要権限|
 |----|----|----|
-|help|discord上にhelpを表示します。 |-|
+|help|discord上にhelpとwebリンクを表示します。webサイトへ外部からアクセスするには追加のポート開放が必要です。 |-|
 |ip|このbot(サーバー)を実行しているipアドレスを返します。|-(configにより有効にする必要あり)|
 |start|サーバーを開始します。但し、server.py起動時には自動的に開始されます。|bot管理者/discord管理者|
 |stop|サーバーを停止します。但しserver.pyは実行状態から遷移しないため他のコマンドを使用できます。|bot管理者/discord管理者|
@@ -38,8 +38,17 @@ discordを用いて特定のサーバーを管理できます。
 |lang|サーバーの言語を変更します。|bot管理者/discord管理者|
 |admin|サーバー内の管理者権限を操作します。admin forceを用いてbot管理者を設定できます。|discord管理者|
 |permission|プレイヤーの権限を表示します。|-|
+|tokengen|webアクセスのためのtokenを生成します。webログイン画面で入力してください|discord管理者|
 
 これらコマンドの設定等は後述の使用方法を参照してください。
+
+## web上での操作
+
+ホストipアドレス:<configで設定したport>を用いて操作することができます。
+
+アクセス時にtokenを要求されるため、discordで`/token`を実行しtokenを入手してください。
+
+現在のところwaitressを利用し実装されています。そのためhttpsを用いて実行する場合(推奨)リバースプロキシを利用してください。
 
 ## 動作確認
 
@@ -129,6 +138,8 @@ tokenを記述し、configのserver_pathにserver.[exe/bat(jarを実行するフ
 |backup_path|ワールドデータのバックアップパス(例えば`D:\\server\\backup`に保存したければ`D:\\server\\backup\\`または`D:/server/backup/`)|
 |mc|サーバーがmcサーバーかどうかを記述します。現在trueに設定されている場合、/ip時にserver.propertiesからserver-portを読み出します|
 |lang|discordに送信するメッセージの言語を選択します。(en : 英語, ja : 日本語)|
+|web.secret_key|Flaskで利用する鍵を設定します。(app.secret_key)十分に強固な文字列を設定してください。|
+|web.port|webサーバーのポート番号を入力します。|
 
 server.pyはサーバ本体と同じ改装に配置することを推奨します。
 
@@ -138,9 +149,15 @@ server.pyはサーバ本体と同じ改装に配置することを推奨しま�
 
 ![server.mp4](https://github.com/mikatan-mikan/server-bot/assets/78290592/32df51eb-7166-40a8-b817-e1057d2aabd0)
 
+以下の画像は、webアクセス時の画面です。(PC/スマホ)
+
+![PCサイズ](https://github.com/user-attachments/assets/a1b09ad4-9fde-4df9-abd8-cb6628589a67)![スマホサイズ](https://github.com/user-attachments/assets/6b59139f-363d-4a92-b7c8-398ed9d03d78)
+
 ## 注意
 
-生成されるupdate.pyの名前は変更しないでください。`/replace`が動作しなくなるはずです。
+・生成されるupdate.pyの名前は変更しないでください。`/replace`が動作しなくなるはずです。
+
+・.configに存在するweb.secret_keyには予測不可能で十分に長い文字列を設定してください。
 
 ### /cmd
 
