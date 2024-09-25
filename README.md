@@ -175,7 +175,7 @@ server.pyはサーバ本体と同じ改装に配置することを推奨しま�
 
 ## 更新履歴
 
-https://github.com/mikatan-mikan/server-bot/blob/main/PATCH.md
+https://github.com/f-atsuhiro/server-bot/blob/main/PATCH.md
 
 ### 最後の破壊的変更
 
