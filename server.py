@@ -1,22 +1,26 @@
 import discord 
 from discord import app_commands 
+from discord.ext import tasks
+import waitress.server
 intents = discord.Intents.default() 
 client = discord.Client(intents=intents) 
 tree = app_commands.CommandTree(client)
 
 from enum import Enum
-from datetime import datetime
+from datetime import datetime, timedelta
 from collections import deque
 import subprocess
 import threading
 import asyncio
 import platform
 import os
-from shutil import copystat,Error,copy2
+from shutil import copystat,Error,copy2,copytree
 import sys
 import logging
 import requests
 import json
+
+use_flask_server = True
 
 #プロンプトを送る
 print()
@@ -37,6 +41,7 @@ now_path = "/".join(__file__.replace("\\","/").split("/")[:-1])
 if now_path == "": now_path = "."
 #現在のファイル(server.py)
 now_file = __file__.replace("\\","/").split("/")[-1]
+WEB_TOKEN_FILE = '/mikanassets/web/usr/tokens.json'
 
 def wait_for_keypress():
     print("please press any key to continue...")
@@ -71,7 +76,7 @@ def make_config():
             os.makedirs(default_backup_path)
         default_backup_path = os.path.realpath(default_backup_path) + "/"
         print("default backup path: " + default_backup_path)
-        config_dict = {"allow":{"ip":True},"server_path":now_path + "/","allow_mccmd":["list","whitelist","tellraw","w","tell"],"server_name":"bedrock_server.exe","log":{"server":True,"all":False},"backup_path": default_backup_path,"mc":True,"lang":"en","force_admin":[]}
+        config_dict = {"allow":{"ip":True},"server_path":now_path + "/","allow_mccmd":["list","whitelist","tellraw","w","tell"],"server_name":"bedrock_server.exe","log":{"server":True,"all":False},"backup_path": default_backup_path,"mc":True,"lang":"en","force_admin":[],"web":{"secret_key":"YOURSECRETKEY","port":80}}
         json.dump(config_dict,file,indent=4)
         config_changed = True
     else:
@@ -118,6 +123,12 @@ def make_config():
                 cfg["lang"] = "en"
             if "force_admin" not in cfg:
                 cfg["force_admin"] = []
+            if "web" not in cfg:
+                cfg["web"] = {"secret_key":"YOURSECRETKEY","port":80}
+            if "port" not in cfg["web"]:
+                cfg["web"]["port"] = 80
+            if "secret_key" not in cfg["web"]:
+                cfg["web"]["secret_key"] = "YOURSECRETKEY"
             return cfg
         if config_dict != check(config_dict.copy()):
             check(config_dict)
@@ -284,6 +295,31 @@ class Formatter():
             formatted_message = f"{bold_black_asctime} {colored_levelname} {message}"
             
             return formatted_message
+    class FlaskFormatter(logging.Formatter):
+        COLORS = {
+            'FLASK': Color.BOLD + Color.CYAN,   # Green
+        }
+        RESET = '\033[0m'  # Reset color
+        BOLD_BLACK = Color.BOLD + Color.BLACK  # Bold Black
+
+        def format(self, record):
+            # Format the asctime
+            record.asctime = self.formatTime(record, self.datefmt)
+            bold_black_asctime = f"{self.BOLD_BLACK}{record.asctime}{self.RESET}"
+            
+            # Apply color to the level name only
+            color = self.COLORS["FLASK"]
+            colored_levelname = f"{color}FLASK   {self.RESET}"
+            
+            # Get the formatted message
+            message = record.getMessage()
+
+            message = message + Color.RESET
+            
+            # Create the final formatted message
+            formatted_message = f"{bold_black_asctime} {colored_levelname} {message}"
+            
+            return formatted_message
 
     class DefaultConsoleFormatter(logging.Formatter):
         def format(self, record):
@@ -320,6 +356,21 @@ class Formatter():
             formatted_message = f"{record.asctime} {padded_levelname} {message}"
             
             return formatted_message
+    class FlaskConsoleFormatter(logging.Formatter):
+        def format(self, record):
+            # Format the asctime
+            record.asctime = self.formatTime(record, self.datefmt)
+            
+            padded_levelname = "FLASK".ljust(Formatter.levelname_size)
+            
+            
+            # Get the formatted message
+            message = record.getMessage()
+            
+            # Create the final formatted message
+            formatted_message = f"{record.asctime} {padded_levelname} {message}"
+            
+            return formatted_message
 
 
 #logger
@@ -327,7 +378,7 @@ dt_fmt = '%Y-%m-%d %H:%M:%S'
 console_formatter = Formatter.ColoredFormatter(f'{Color.BOLD + Color.BG_BLACK}%(asctime)s %(levelname)s %(name)s: %(message)s', dt_fmt)
 file_formatter = Formatter.DefaultConsoleFormatter('%(asctime)s %(levelname)s %(name)s: %(message)s', dt_fmt)
 #/log用のログ保管場所
-log_msg = deque(maxlen=10)
+log_msg = deque(maxlen=19)
 def create_logger(name,console_formatter=console_formatter,file_formatter=file_formatter):
     class DequeHandler(logging.Handler):
         def __init__(self, deque):
@@ -372,7 +423,9 @@ log_logger = create_logger("log")
 permission_logger = create_logger("permission")
 admin_logger = create_logger("admin")
 lang_logger = create_logger("lang")
+token_logger = create_logger("token")
 minecraft_logger = create_logger("minecraft",Formatter.MinecraftFormatter(f'{Color.BOLD + Color.BG_BLACK}%(asctime)s %(levelname)s %(name)s: %(message)s', dt_fmt),Formatter.MinecraftConsoleFormatter('%(asctime)s %(levelname)s %(name)s: %(message)s', dt_fmt))
+
 #--------------------------------------------------------------------------------------------
 
 
@@ -389,6 +442,8 @@ try:
     backup_path = config["backup_path"]
     lang = config["lang"]
     bot_admin = set(config["force_admin"])
+    flask_secret_key = config["web"]["secret_key"]
+    web_port = config["web"]["port"]
 except KeyError:
     sys_logger.error("config file is broken. please delete .config and try again.")
     wait_for_keypress()
@@ -406,17 +461,57 @@ for i in args:
         # pass
 
 #updateプログラムが存在しなければdropboxから./update.pyにコピーする
-if not os.path.exists(now_path + "/" + "update.py") or do_init:
-    url='https://www.dropbox.com/scl/fi/w93o5sndwaiuie0otorm4/update.py?rlkey=gh3gqbt39iwg4afey11p99okp&st=2i9a9dzp&dl=1'
-    filename= now_path + '/' + 'update.py'
+if not os.path.exists(now_path + "/mikanassets"):
+    os.makedirs(now_path + "/mikanassets")
+if not os.path.exists(now_path + "/mikanassets/" + "update.py") or do_init:
+    url='https://www.dropbox.com/scl/fi/xq48bnjifnsllsy6usvsv/update_v1.1.py?rlkey=js8z8r5j75ex4xdbp3i6xscpd&st=smcn7dnl&dl=1'
+    filename= now_path + '/mikanassets/' + 'update.py'
 
     urlData = requests.get(url).content
 
     with open(filename ,mode='wb') as f: # wb でバイト型を書き込める
         f.write(urlData)
     #os.system("curl https://www.dropbox.com/scl/fi/w93o5sndwaiuie0otorm4/update.py?rlkey=gh3gqbt39iwg4afey11p99okp&st=2i9a9dzp&dl=1 -o ./update.py")
+if not os.path.exists(now_path + "/mikanassets/web"):
+    os.makedirs(now_path + "/mikanassets/web")
+if not os.path.exists(now_path + "/mikanassets/web/index.html") or do_init:
+    url='https://www.dropbox.com/scl/fi/04to7yrstmgdz9j09ljy2/index.html?rlkey=7q8eu0nooj8zy34dguwwsbkjd&st=4cb6y9sr&dl=1'
+    filename= now_path + '/mikanassets/web/index.html'
+    urlData = requests.get(url).content
+    with open(filename ,mode='wb') as f: # wb でバイト型を書き込める
+        f.write(urlData)
+if not os.path.exists(now_path + "/mikanassets/web/login.html") or do_init:
+    url='https://www.dropbox.com/scl/fi/6yuq2dhqozxeh8vxj8wgy/login.html?rlkey=9w9tbevra7r9vwjeofslb8j0x&st=sxtayji2&dl=1'
+    filename= now_path + '/mikanassets/web/login.html'
+    urlData = requests.get(url).content
+    with open(filename ,mode='wb') as f: # wb でバイト型を書き込める
+        f.write(urlData)
+#mikanassets/web/usr/tokens.jsonを作成
+if not os.path.exists(now_path + "/mikanassets/web/usr"):
+    os.makedirs(now_path + "/mikanassets/web/usr")
+if not os.path.exists(now_path + "/mikanassets/web/usr/tokens.json"):
+    #ファイルを作成
+    tokenfile_items = {"tokens":[]}
+    file = open(now_path + "/mikanassets/web/usr/tokens.json","w",encoding="utf-8")
+    file.write(json.dumps(tokenfile_items,indent=4))
+    file.close()
+    del tokenfile_items
+if not os.path.exists(now_path + "/mikanassets/web/pictures"):
+    os.makedirs(now_path + "/mikanassets/web/pictures")
+if not os.path.exists(now_path + "/mikanassets/web/pictures/icon.png") or do_init:
+    url = 'https://www.dropbox.com/scl/fi/cr6uejk7s2vk4zevm8zc6/boticon.png?rlkey=szuisf29w1rnynz9xs9ucr24l&st=a8kuy1fd&dl=1'
+    filename= now_path + '/mikanassets/web/pictures/icon.png'
+    urlData = requests.get(url).content
+    with open(filename ,mode='wb') as f: # wb でバイト型を書き込める
+        f.write(urlData)
 
+def read_web_tokens():
+    file = open(now_path + "/mikanassets/web/usr/tokens.json","r",encoding="utf-8")
+    tokens = json.load(file)["tokens"]
+    file.close()
+    return tokens
 
+web_tokens = read_web_tokens()
 
 def make_token_file():
     global token
@@ -498,6 +593,7 @@ COMMAND_PERMISSION = {
     "/force_admin":2,
     "/permission ":0,
     "/lang       ":2,
+    "/tokengen   ":1,
 }
 
 async def get_text_dat():
@@ -517,7 +613,8 @@ async def get_text_dat():
             "/logs       ":"サーバーのログを表示します。引数を与えた場合にはそのファイルを、与えられなければ動作中に得られたログから最新の10件を返します。",
             "/force_admin":"/force_admin <add/remove> <user> で、userのbot操作権利を付与/剥奪することができます。",
             "/permission ":"/permission <user> で、userのbot操作権利を表示します。",
-            "/lang       ":"/lang <lang> で、botの言語を変更します。"
+            "/lang       ":"/lang <lang> で、botの言語を変更します。",
+            "/tokengen   ":"/tokengen で、webでログインするためのトークンを生成します。",
         },
         "en":{
             "/stop       ":"Stop the server. If the server is not running, an error message will be returned.",
@@ -531,6 +628,7 @@ async def get_text_dat():
             "/force_admin":"/force_admin <add/remove> <user> gives or removes user's bot operation rights.",
             "/permission ":"/permission <user> displays the user's bot operation rights.",
             "/lang       ":"/lang <lang> changes the bot's language.",
+            "/tokengen   ":"/tokengen generates a token for login to the web.",
         },
     }
         
@@ -551,6 +649,7 @@ async def get_text_dat():
             },
             "permission":"選択したユーザに対してbot操作権限を表示します。",
             "lang":"botの言語を変更します。引数には言語コードを指定します。",
+            "tokengen":"webにログインするためのトークンを生成します。",
         },
         "en":{
             "stop":"Stop the server.",
@@ -567,6 +666,7 @@ async def get_text_dat():
             },
             "permission":"Display the bot operation rights of the selected user.",
             "lang":"Change the bot's language. With an argument, specify the language code.",
+            "tokengen":"Generate a token for login to the web.",
         },
     }
 
@@ -624,6 +724,9 @@ async def get_text_dat():
             },
             "lang":{
                 "success":"言語を{}に変更しました",
+            },
+            "tokengen":{
+                "success":"生成したトークン(30日間有効) : {}",
             },
         }
         ACTIVITY_NAME = {
@@ -686,6 +789,9 @@ async def get_text_dat():
             "lang":{
                 "success":"Language changed to {}",
             },
+            "tokengen":{
+                "success":"Generated token (valid for 30 days) : {}",
+            },
         }
         ACTIVITY_NAME = {
             "starting":"Server go!",
@@ -695,6 +801,7 @@ async def get_text_dat():
         }
     def make_send_help():
         global send_help
+        send_help += f"web : http://{requests.get("https://api.ipify.org").text}:{web_port}\n" 
         send_help += "```"
         for key in HELP_MSG[lang]:
             send_help += key + " " + HELP_MSG[lang][key] + "\n"
@@ -857,10 +964,20 @@ if config_changed: sys_logger.info("added config because necessary elements were
 
 class ServerBootException(Exception):pass
 
+status_lock = threading.Lock()
+@tasks.loop(seconds=10)
+async def update_loop():
+    with status_lock:
+        if process is not None:
+            await client.change_presence(activity=discord.Game(name=ACTIVITY_NAME["running"]))
+        else:
+            await client.change_presence(activity=discord.Game(name=ACTIVITY_NAME["ended"]))
+
 @client.event
 async def on_ready():
     global process
     ready_logger.info('discord bot logging on')
+    update_loop.start()
     try:
         #サーバーの起動
         await client.change_presence(activity=discord.Game(ACTIVITY_NAME["starting"]))
@@ -1072,7 +1189,7 @@ async def replace(interaction: discord.Interaction,py_file:discord.Attachment):
     channel_id = str(interaction.channel_id)
     replace_logger.info("call update.py")
     replace_logger.info('replace args : ' + msg_id + " " + channel_id)
-    os.execv(sys.executable,["python3",now_path + "/" + "update.py",temp_path + "/new_source.py",msg_id,channel_id,now_file])
+    os.execv(sys.executable,["python3",now_path + "/mikanassets/" + "update.py",temp_path + "/new_source.py",msg_id,channel_id,now_file])
 
 #/ip
 @tree.command(name="ip",description=COMMAND_DESCRIPTION[lang]["ip"])
@@ -1124,7 +1241,7 @@ async def logs(interaction: discord.Interaction,filename:str = None):
         return
     # discordにログを送信
     if filename is None:
-        await interaction.response.send_message("```ansi\n" + "\n".join(log_msg) + "\n```")
+        await interaction.response.send_message("```ansi\n" + "\n".join(log_msg[:10]) + "\n```")
     else:
         if "/" in filename or "\\" in filename or "%" in filename:
             log_logger.error('invalid filename : ' + filename + "\n" + f"interaction user / id：{interaction.user} {interaction.user.id}")
@@ -1152,6 +1269,33 @@ async def logs(interaction: discord.Interaction,filename:str = None):
     log_ = "Server logs" if filename is None else filename
     log_logger.info(f"sended logs -> {log_}")
 
+
+def gen_web_token():
+    from random import choices
+    from string import ascii_letters, digits
+    return ''.join(choices(ascii_letters + digits, k=12))
+
+#/tokengen トークンを生成する
+@tree.command(name="tokengen",description=COMMAND_DESCRIPTION[lang]["tokengen"])
+async def tokengen(interaction: discord.Interaction):
+    #管理者権限を要求
+    if not await is_administrator(interaction.user):
+        await not_enough_permission(interaction,token_logger)
+        return
+    await print_user(token_logger,interaction.user)
+    new_token = gen_web_token()
+    await interaction.response.send_message(RESPONSE_MSG["tokengen"]["success"].format(new_token),ephemeral=True)
+    token_logger.info('token sent')
+    #トークンをファイルに書き込む
+    dat_token = {"token":new_token, "deadline":(datetime.now() + timedelta(days=30)).strftime("%Y-%m-%d %H:%M:%S")}
+    web_tokens.append(dat_token)
+    with open(now_path + "/mikanassets/web/usr/tokens.json","r",encoding="utf-8") as f:
+        item = json.load(f)
+        item["tokens"].append(dat_token)
+    with open(now_path + "/mikanassets/web/usr/tokens.json","w",encoding="utf-8") as f:
+        json.dump(item,f,indent=4,ensure_ascii=False)
+    token_logger.info('token added : ' + str(dat_token))
+
 #/help
 @tree.command(name="help",description=COMMAND_DESCRIPTION[lang]["help"])
 async def help(interaction: discord.Interaction):
@@ -1172,12 +1316,212 @@ async def exit(interaction: discord.Interaction):
     await interaction.response.send_message(RESPONSE_MSG["exit"]["success"])
     exit_logger.info('exit')
     await client.close()
+    #waitressサーバーを終了
+
+    sys.exit()
 
 #コマンドがエラーの場合
 @tree.error
 async def on_error(interaction: discord.Interaction, error: Exception):
     sys_logger.error(error)
     await interaction.response.send_message(RESPONSE_MSG["error"]["error_base"] + str(error))
+
+#-------------------------------------------------------------------------------------------------------web
+from flask import Flask, render_template, jsonify, request, session, redirect, url_for, make_response, flash
+from ansi2html import Ansi2HTMLConverter
+import waitress
+
+app = Flask(__name__,template_folder="mikanassets/web",static_folder="mikanassets/web")
+app.secret_key = flask_secret_key
+flask_logger = create_logger("werkzeug",Formatter.FlaskFormatter(f'{Color.BOLD + Color.BG_BLACK}%(asctime)s %(levelname)s %(name)s: %(message)s', dt_fmt),Formatter.FlaskConsoleFormatter('%(asctime)s %(levelname)s %(name)s: %(message)s', dt_fmt))
+
+class LogIPMiddleware:
+    def __init__(self, app):
+        self.app = app
+        # self.before_log = {"Client IP": "", "Method": "", "URL": "", "Query": ""}
+
+    def __call__(self, environ, start_response):
+        # クライアントのIPアドレスを取得
+        client_ip = environ.get('REMOTE_ADDR', '')
+        # リクエストされたURLを取得
+        request_method = environ.get('REQUEST_METHOD', '')
+        request_uri = environ.get('PATH_INFO', '')
+        query_string = environ.get('QUERY_STRING', '')
+
+        # ログに記録
+        if request_uri != "/get_console_data":
+            flask_logger.info(f"Client IP: {client_ip}, Method: {request_method}, URL: {request_uri}, Query: {query_string}")
+
+        return self.app(environ, start_response)
+
+# ミドルウェアをアプリに適用
+app.wsgi_app = LogIPMiddleware(app.wsgi_app)
+
+
+# トークンをロードする
+def load_tokens():
+    tokens = set()
+    try:
+        items = web_tokens
+        now = datetime.now()
+        for token in items:
+            if datetime.strptime(token["deadline"], "%Y-%m-%d %H:%M:%S") > now:
+                tokens.add(token["token"])
+        return tokens
+    except FileNotFoundError:
+        flask_logger.info(f"Token file not found: {WEB_TOKEN_FILE}")
+        return {}
+
+# トークンを検証する
+def is_valid_token(token):
+    tokens = load_tokens()
+    return token in tokens
+
+def is_valid_session(token):
+    if 'token' not in session:
+        # ログアウトにリダイレクトするためのフラグを返す
+        return False
+    if not is_valid_token(session['token']):
+        #ログアウト
+        # ログアウトにリダイレクトするためのフラグを返す
+        return False
+    return True
+
+
+# クッキーからトークンを取得し、セッションにセット
+@app.before_request
+def load_token_from_cookie():
+    token = request.cookies.get('token')
+    if token and is_valid_token(token):
+        session['token'] = token
+
+@app.route('/', methods=['GET', 'POST'])
+def index():
+    # セッションにトークンがある場合、ログイン済み
+    if 'token' in session:
+        if is_valid_token(session['token']):
+            return render_template('index.html', logs = log_msg)
+
+    # ログアウトさせられた場合理由を表示
+    if 'logout_reason' in session:
+        flash(session['logout_reason'])
+        session.pop('logout_reason') 
+
+    if request.method == 'POST':
+        token = request.form['token']
+        if is_valid_token(token):
+            # トークンをセッションとクッキーに保存
+            session['token'] = token
+            resp = make_response(redirect(url_for('index')))
+            
+            # クッキーにトークンを保存、有効期限を30日間に設定
+            expires = datetime.now() + timedelta(days=30)
+            resp.set_cookie('token', token, expires=expires)
+
+            return resp
+        else:
+            flash('Invalid token, please try again.')
+
+    return render_template('login.html')
+
+@app.route('/logout')
+def logout():
+    # セッションとクッキーからトークンを削除してログアウト
+    session.pop('token', None)
+    resp = make_response(redirect(url_for('index')))
+    resp.set_cookie('token', '', expires=0)  # クッキーを無効化
+    return resp
+
+# @app.route('/')
+# def index():
+#     return render_template('index.html', logs = log_msg)
+
+@app.route('/get_console_data')
+def get_console_data():
+    if not is_valid_session(session['token']):
+        # ログアウト
+        session["logout_reason"] = "This token has expired. create new token."
+        return jsonify({"redirect": url_for('logout')})
+    
+    converter = Ansi2HTMLConverter()
+    html_string = converter.convert("\n".join(log_msg))
+
+    try:
+        server_online = process.poll() is None#サーバーが起動している = True
+    except:
+        if process is not None:
+            process.kill()
+        server_online = False
+
+    bot_online = True
+
+    return jsonify({"html_string": html_string, "online_status": {"server": server_online, "bot": bot_online}})
+
+
+@app.route('/flask_start_server', methods=['POST'])
+def flask_start_server():
+    if not is_valid_session(session['token']):
+        # ログアウト
+        session["logout_reason"] = "This token has expired. create new token."
+        return jsonify({"redirect": url_for('logout')})
+    global process
+    if process is not None:
+        start_logger.info("server is already running")
+        return jsonify("server is already running")
+    process = subprocess.Popen([server_path + server_name],cwd=server_path,shell=True,stdin=subprocess.PIPE,stdout=subprocess.PIPE,encoding="utf-8")
+    start_logger.info("started server")
+    threading.Thread(target=server_logger,args=(process,deque())).start()
+    return jsonify("started server!!")
+
+@app.route('/flask_backup_server', methods=['POST'])
+def flask_backup_server():
+    if not is_valid_session(session['token']):
+        # ログアウト
+        session["logout_reason"] = "This token has expired. create new token."
+        return jsonify({"redirect": url_for('logout')})
+    world_name = request.form['fileName']
+    if "\\" in world_name or "/" in world_name:
+        return jsonify(RESPONSE_MSG["backup"]["invalid_filename"])
+    if process is None:
+        if os.path.exists(server_path + world_name):
+            backup_logger.info("backup server")
+            to = backup_path + "/" + datetime.now().strftime('%Y-%m-%d_%H_%M_%S')
+            copytree(server_path + world_name,to)
+            backup_logger.info("backuped server to " + to)
+            return jsonify("backuped server!! " + to)
+        else:
+            backup_logger.info('data not found : ' + server_path + world_name)
+            return jsonify(RESPONSE_MSG["backup"]["data_not_found"] + ":" + server_path + world_name)
+    else:
+        return jsonify("server is already running")
+
+@app.route('/submit_data', methods=['POST'])
+def submit_data():
+    if not is_valid_session(session['token']):
+        # ログアウト
+        session["logout_reason"] = "This token has expired. create new token."
+        return jsonify({"redirect": url_for('logout')})
+    user_input = request.form['userInput']
+    #サーバーが起きてるかを確認
+    if process is None:
+        return jsonify("server is not running")
+    #ifに引っかからない = サーバーが起動している
+    #サーバーの標準入力に入力
+    process.stdin.write(user_input + "\n")
+    process.stdin.flush()
+
+    # データを処理し、結果を返す（例: メッセージを返す）
+    return jsonify(f"result: {user_input}")
+
+def run_web():
+    waitress.serve(app, host='0.0.0.0', port=web_port, _quiet=True)
+
+    
+if use_flask_server:
+    web_thread = threading.Thread(target=run_web, daemon=True)
+    web_thread.start()
+#-------------------------------------------------------------------------------------------------------
+
 
 # discord.py用のロガーを取得して設定
 discord_logger = logging.getLogger('discord')
@@ -1187,4 +1531,3 @@ if log["all"]:
     discord_logger.addHandler(file_handler)
 
 client.run(token, log_formatter=console_formatter)
-
