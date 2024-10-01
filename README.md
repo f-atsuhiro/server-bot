@@ -139,6 +139,7 @@ tokenを記述し、configのserver_pathにserver.[exe/bat(jarを実行するフ
 |allow_mccmd|/cmdで標準入力を許可するコマンド名のリスト|
 |server_name|minecraft server本体の名前 java版の場合サーバ起動に利用される`server.bat`等を入力してください(GUI起動させないでください)|
 |log|各種ログを保存するか否か serverをtrueにするとmcサーバーの実行ログをmcserverと同じディレクトリに保存し、allをtrueにするとすべてのログをserver.pyと同じディレクトリに保存します|
+|stop|submitに実行するコマンドを入力します。/stop実行時にこのコマンドが標準入力に渡されます|
 |backup_path|ワールドデータのバックアップパス(例えば`D:\\server\\backup`に保存したければ`D:\\server\\backup\\`または`D:/server/backup/`)|
 |mc|サーバーがmcサーバーかどうかを記述します。現在trueに設定されている場合、/ip時にserver.propertiesからserver-portを読み出します|
 |lang|discordに送信するメッセージの言語を選択します。(en : 英語, ja : 日本語)|
@@ -175,7 +176,7 @@ server.pyはサーバ本体と同じ改装に配置することを推奨しま�
 
 ## 更新履歴
 
-https://github.com/f-atsuhiro/server-bot/blob/main/PATCH.md
+https://github.com/mikatan-mikan/server-bot/blob/main/PATCH.md
 
 ### 最後の破壊的変更
 
